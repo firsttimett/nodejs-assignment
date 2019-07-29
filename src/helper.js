@@ -17,5 +17,13 @@ module.exports = {
             code: code,
             message: message
         })
+    },
+    FilterEmptyDistinct: (arr) => {
+        return arr.filter((el,i) => { 
+            return el && el.length > 0 && arr.indexOf(el) === i;
+        });
+    },
+    ExtractEmailTag: (str) => {
+        return str.match(/(@[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi);
     }
 }
