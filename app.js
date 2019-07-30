@@ -1,16 +1,17 @@
 'use strict'
 
 const express = require( 'express' );
-const helper = require('./src/helper');
 const teacher = require('./src/teacher');
-let app = express();
+const app = express();
+
+require('dotenv').config();
 
 app.use(express.json());
 
-let portNum = process.env.port || 8100;
+let portNum = process.env.PORT || 8100;
 
 var server = app.listen(portNum, _ => {
-  console.log( 'Server started and listening to 8100...' );
+  console.log( 'Server started and listening to ' + portNum + '...' );
 })
 
 app.post('/api/register', async (req, res) => {
@@ -58,3 +59,5 @@ app.post('/api/retrievefornotifications', async (req, res) => {
         res.status(error.code).json({ message: error.message });
     }
 });
+
+module.exports = app;

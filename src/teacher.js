@@ -1,3 +1,4 @@
+'use strict'
 const helper = require('./helper');
 var pool = require('./database');
 
@@ -185,7 +186,7 @@ async function retrievefornotifications(req){
             helper.Reject(reject, 406, "notification is missing");
     });
     var arrFormattedEmailTag = arrEmailTag 
-                                ? arrEmailTag.map((el) => { return helper.Escape(el.slice(1)) }) 
+                                ? arrEmailTag.map((el) => { return '"' + helper.Escape(el.slice(1)) + '"' }) 
                                 : new Array();
 
     var sqlQuery = 'SELECT \
@@ -199,9 +200,14 @@ async function retrievefornotifications(req){
                     INNER JOIN \
                         `user` u2 \
                     ON \
-                        c.student_uid = u2.uid AND u2.isTeacher = 0 \
+                        c.student_uid = u2.uid AND u2.isTeacher = 0 AND u2.suspended = 0 \
                     WHERE \
-                        u.email = "' + helper.Escape(teacherEmail) + '";';
+                        u.email = "' + helper.Escape(teacherEmail) + '"';
+
+    if (arrFormattedEmailTag.length > 0)
+        sqlQuery += ' OR u2.email IN (' + arrFormattedEmailTag.join() + ');';
+    else
+        sqlQuery += ';';
 
     var recipients = await new Promise((resolve, reject) => {
         pool.query(sqlQuery, (err, results) => {
@@ -214,12 +220,12 @@ async function retrievefornotifications(req){
         })
     });
 
-    return helper.FilterEmptyDistinct(recipients.concat(arrFormattedEmailTag));
+    return helper.FilterEmptyDistinct(recipients);
 }
 
 module.exports = {
-    register: register,
-    commonstudents: commonstudents,
-    suspend: suspend,
-    retrievefornotifications: retrievefornotifications
+    register,
+    commonstudents,
+    suspend,
+    retrievefornotifications
 };
