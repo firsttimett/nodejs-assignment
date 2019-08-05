@@ -1,3 +1,4 @@
+'use strict'
 const chai = require('chai');
 const chaiHttp = require('chai-http');
 const app = require('../app');
@@ -6,10 +7,13 @@ chai.use(chaiHttp)
 const assert = chai.assert;
 
 function IsEqualArray(arr1, arr2) {
-    return arr1.length === arr2.length && arr1.every(function(value, index) { return value === arr2[index]});
+    var sortedArr2 = arr2.sort();
+    return arr1.length === arr2.length && arr1.sort().every(function(value, index) { return value === sortedArr2[index]});
 }
 
 describe('api', function() {
+    this.timeout(10000);
+    
     describe('register', function() {
         it('when the email of a teacher (teacherken) and his students are provided, expect success with http status code 204', (done) => {
             let req_param = {
@@ -96,7 +100,7 @@ describe('api', function() {
     });
 
     describe('suspend', function() {
-        it('when the email of an active student is provided, expect success with http status code 204', (done) => {
+        it('when the email of an active student is provided, expect success with http status code 204 or 406', (done) => {
             let req_param = {
                 student: "studentjon@example.com"
             };
@@ -105,7 +109,10 @@ describe('api', function() {
                 .post('/api/suspend')
                 .send(req_param)
                 .end((err, res) => {
-                    assert.equal(res.status, 204);
+                    assert.isTrue(res.status == 204 || res.status == 406, 
+                        res.status == 204 
+                        ? 'Successfully suspend the student' 
+                        : 'There is no such user or the user is a teacher or the user is already suspended');
                     done();
                 });
         });

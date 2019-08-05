@@ -1,15 +1,15 @@
 'use strict'
 const helper = require('./helper');
-var pool = require('./database');
+var knex = require('./database');
 
 async function register(req) {
     var emailList = await InsertUserAndGetEmailList(req);
     var userData = await GetUser(emailList);
     
-    return await InsertClass(userData);
+    return InsertClass(userData);
 }
 
-function InsertUserAndGetEmailList(req){
+async function InsertUserAndGetEmailList(req){
     var teacherEmail = req.body.teacher;
     var studentsEmail = req.body.students;
     var queryData = new Array();
@@ -17,52 +17,45 @@ function InsertUserAndGetEmailList(req){
     helper.FilterEmptyDistinct(studentsEmail);
 
     // if email is not empty, add to array after escape
-    if (teacherEmail && teacherEmail.length > 0)
-        queryData.push([helper.Escape(teacherEmail), 1, 0]);
+    if (teacherEmail && teacherEmail.length > 0){
+        queryData.push({ email: teacherEmail, isTeacher: 1, suspended: 0 });
+    }
         
     studentsEmail.forEach((email) => {
-        queryData.push([helper.Escape(email), 0, 0]);
+        queryData.push({ email: email, isTeacher: 0, suspended: 0 });
     });
 
-    var sqlQuery = 'INSERT INTO `user` (email, isTeacher, suspended) VALUES ';
-
-    queryData.forEach(function(el){
-        sqlQuery += "(\"" + el[0] + "\"," + el[1] + "," + el[2] + "), ";
-    });
-
-    sqlQuery = sqlQuery.slice(0, -2);
-
-    sqlQuery += ' ON DUPLICATE KEY UPDATE suspended=suspended;';
-
-    return new Promise((resolve, reject) => { 
-        pool.query(sqlQuery, (err, results) => {
-            if (!err) {
-                if (results.affectedRows == 0)
-                    helper.Reject(reject, 406, 'neither teacher nor student email is given');
-                else if (!teacherEmail)
-                    helper.Reject(reject, 406, 'teacher email is missing');
-                else if (!studentsEmail)
-                    helper.Reject(reject, 406, 'students email is missing');
-                else
-                    resolve(queryData);
-            }
+    return new Promise((resolve, reject) => {
+        knex.raw(
+            knex('user').insert(queryData).toQuery() + ' ON DUPLICATE KEY UPDATE suspended=suspended'
+        )
+        .then(function(results){
+            if (results[0].affectedRows == 0)
+                helper.Reject(reject, 406, 'neither teacher nor student email is given');
+            else if (!teacherEmail)
+                helper.Reject(reject, 406, 'teacher email is missing');
+            else if (!studentsEmail)
+                helper.Reject(reject, 406, 'students email is missing');
             else
-                helper.Reject(reject, 500, err.code + ": " + err.sqlMessage);
-         })
+                resolve(queryData);
+        })
+        .catch(function(err){
+            helper.Reject(reject, 500, err);
+        });
     });
 }
 
 function GetUser(queryData){
-    var concatEmail = queryData.map((el) => { return '"' + el[0] + '"' }).join();
-    var sqlQuery = 'SELECT uid, isTeacher FROM `user` WHERE email IN (' + concatEmail + ');';
+    var arrEmail = queryData.map((el) => el.email );
 
     return new Promise((resolve, reject) => {
-        pool.query(sqlQuery, (err, results)=> {
-            if (!err)
-                resolve(results);
-            else
-                helper.Reject(reject, 500, err.code + ": " + err.sqlMessage);
+        knex.select('uid', 'isTeacher').from('user').whereIn('email', arrEmail)
+        .then(function(results){
+            resolve(results);
         })
+        .catch(function(err){
+            helper.Reject(reject, 500, err);
+        });
     });
 }
 
@@ -73,26 +66,19 @@ function InsertClass(userData){
     userData.shift();
 
     userData.forEach((el) => {
-        queryData.push([teacherUid, el.uid]);
+        queryData.push({ teacher_uid: teacherUid, student_uid: el.uid });
     });
-
-    var sqlQuery = 'INSERT INTO `class` (teacher_uid, student_uid) VALUES ';
-
-    queryData.forEach(function(el){
-        sqlQuery += "(" + el[0] + "," + el[1] + "), ";
-    });
-
-    sqlQuery = sqlQuery.slice(0, -2);
-
-    sqlQuery += ' ON DUPLICATE KEY UPDATE teacher_uid=teacher_uid;';
 
     return new Promise((resolve, reject) => {
-        pool.query(sqlQuery, (err, results) => {
-            if (!err)
-                resolve(true);
-            else
-                helper.Reject(reject, 500, err.code + ": " + err.sqlMessage);
+        knex.raw(
+            knex('class').insert(queryData).toQuery() + ' ON DUPLICATE KEY UPDATE teacher_uid=teacher_uid'
+        )
+        .then(function(){
+            resolve(true);
         })
+        .catch(function(err){
+            helper.Reject(reject, 500, err);
+        });
     });
 }
 
@@ -106,44 +92,34 @@ async function commonstudents(args) {
             else
                 arr = args;
 
-            resolve(arr);
+            resolve(helper.FilterEmptyDistinct(arr));
         }
         else
             helper.Reject(reject, 406, "teacher email is missing");
     });
 
-    var newArrTeacher = helper
-                        .FilterEmptyDistinct(arrTeacher)
-                        .map((el) => { return '"' + helper.Escape(el) + '"' });
-
-    var sqlQuery = 
-        'SELECT studentEmail FROM (\
-            SELECT \
-                u.email AS teacherEmail, u2.email AS studentEmail \
-            FROM \
-                class c \
-            INNER JOIN \
-                `user` u \
-            ON \
-                c.teacher_uid = u.uid AND u.isTeacher = 1 AND u.email IN (' + newArrTeacher.join() + ') \
-            INNER JOIN \
-                `user` u2 \
-            ON c.student_uid = u2.uid AND u2.isTeacher = 0\
-        ) AS sub \
-        GROUP BY \
-            studentEmail \
-        HAVING \
-            COUNT(*) = ' + newArrTeacher.length + ';';
-
     return new Promise((resolve, reject) => {
-        pool.query(sqlQuery, (err, results) => {
-            if (!err) {
-                var arrStudents = results.map((el) => { return el.studentEmail });
-                resolve(arrStudents);
-            }
-            else
-                helper.Reject(reject, 500, err.code + ": " + err.sqlMessage);
+        knex.queryBuilder().select('studentEmail').from(function() {
+            this.select('u.email AS teacherEmail', 'u2.email AS studentEmail')
+            .from('class')
+            .innerJoin('user as u', function(){
+                this.on('class.teacher_uid', '=', 'u.uid')
+                .onIn('u.email', arrTeacher);
+            })
+            .innerJoin('user as u2', function(){
+                this.on('class.student_uid', '=', 'u2.uid')
+                .on('u2.isTeacher', '=', 0);
+            }).as('sub');
         })
+        .groupBy('studentEmail')
+        .havingRaw('COUNT(*) = ?', arrTeacher.length)
+        .then(function(results){
+            var arrStudents = results.map((el) => { return el.studentEmail });
+            resolve(arrStudents);
+        })
+        .catch(function(err){
+            helper.Reject(reject, 500, err);
+        });
     });
 }
 
@@ -155,20 +131,23 @@ async function suspend(req){
             helper.Reject(reject, 406, "student email is missing");
     });
 
-    var sqlQuery = 'UPDATE `user` SET suspended = 1 WHERE email = "' + helper.Escape(studentEmail) 
-                    + '" AND isTeacher = 0 AND suspended = 0;';
-
     return new Promise((resolve, reject) => {
-        pool.query(sqlQuery, (err, results) => {
-            if (!err) {
-                if (results.affectedRows == 0)
-                    helper.Reject(reject, 406, "there is no such user or the user is a teacher or the user is already suspended");
-                else
-                    resolve(true);
-            }
-            else
-                helper.Reject(reject, 500, err.code + ": " + err.sqlMessage);
+        knex('user')
+        .where({
+            email: studentEmail,
+            isTeacher: 0,
+            suspended: 0
         })
+        .update('suspended', 1)
+        .then(function(updatedRows){
+            if (updatedRows == 0)
+                helper.Reject(reject, 406, "there is no such user or the user is a teacher or the user is already suspended");
+            else
+                resolve(true);
+        })
+        .catch(function(err){
+            helper.Reject(reject, 500, err);
+        });
     });
 }
 
@@ -186,40 +165,43 @@ async function retrievefornotifications(req){
             helper.Reject(reject, 406, "notification is missing");
     });
     var arrFormattedEmailTag = arrEmailTag 
-                                ? arrEmailTag.map((el) => { return '"' + helper.Escape(el.slice(1)) + '"' }) 
+                                ? arrEmailTag.map((el) => el.slice(1)) 
                                 : new Array();
 
-    var sqlQuery = 'SELECT \
-                        u2.email AS email \
-                    FROM \
-                        class c \
-                    INNER JOIN \
-                        `user` u \
-                    ON \
-                        c.teacher_uid = u.uid AND u.isTeacher = 1 \
-                    INNER JOIN \
-                        `user` u2 \
-                    ON \
-                        c.student_uid = u2.uid AND u2.isTeacher = 0 AND u2.suspended = 0 \
-                    WHERE \
-                        u.email = "' + helper.Escape(teacherEmail) + '"';
+    var whereQuery = 'u.email = ?';
+    var whereBinding = new Array(teacherEmail);
 
-    if (arrFormattedEmailTag.length > 0)
-        sqlQuery += ' OR u2.email IN (' + arrFormattedEmailTag.join() + ');';
-    else
-        sqlQuery += ';';
+    if (arrFormattedEmailTag.length > 0){
+        whereQuery += ' OR u2.email IN (';
+        arrFormattedEmailTag.forEach((el) => {
+            whereQuery += '?,'
+            whereBinding.push(el);
+        });
+        whereQuery = whereQuery.slice(0, -1) + ')';
+    }
 
     var recipients = await new Promise((resolve, reject) => {
-        pool.query(sqlQuery, (err, results) => {
-            if (!err) {
-                var classStudents = results.map((el) => { return el.email });
-                resolve(classStudents);
-            }
-            else
-                helper.Reject(reject, 500, err.code + ": " + err.sqlMessage);
+        knex('class')
+        .select('u2.email AS email')
+        .innerJoin('user as u', function(){
+            this.on('class.teacher_uid', '=', 'u.uid')
+            .on('u.isTeacher', '=', 1);
         })
+        .innerJoin('user as u2', function(){
+            this.on('class.student_uid', '=', 'u2.uid')
+            .on('u2.isTeacher', '=', 0)
+            .on('u2.suspended', '=', 0);
+        })
+        .whereRaw(whereQuery, whereBinding)
+        .then(function(results){
+            var classStudents = results.map((el) => { return el.email });
+            resolve(classStudents);
+        })
+        .catch(function(err){
+            helper.Reject(reject, 500, err);
+        });
     });
-
+    
     return helper.FilterEmptyDistinct(recipients);
 }
 
